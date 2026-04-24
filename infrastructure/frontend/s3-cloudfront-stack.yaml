@@ -1,0 +1,95 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "S3 and CloudFront Stack for Frontend Hosting"
+Parameters:
+  Environment:
+    Type: String
+    Default: "dev"
+    Description: "Deployment environment (e.g., dev, staging, prod)"
+    AllowedValues: 
+      - dev
+      - staging
+      - prod
+  
+  BucketName:
+    Type: String
+    Default: "vortexcrm-frontend-bucket"
+    Description: "Name of the S3 bucket for frontend hosting"
+
+
+Resources:
+  VortexFrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-frontend-bucket"
+
+  VortexFrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref VortexFrontendBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${VortexFrontendBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${VortexCloudFrontDistribution}"
+
+  VortexOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${Environment}-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  VortexCloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-cloudfront-distribution"
+      DistributionConfig:
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt VortexFrontendBucket.RegionalDomainName
+            OriginAccessControlId: !Ref VortexOriginAccessControl
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        Enabled: true
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+          CachedMethods:
+            - GET
+            - HEAD
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        DefaultRootObject: index.html
+    
+Outputs:
+  BucketName:
+    Description: "Name of the S3 bucket for frontend hosting"
+    Value: !Ref VortexFrontendBucket
+    Export:
+      Name: !Sub "${Environment}-frontend-bucket-name"
+
+  CloudFrontDistributionId:
+    Description: "ID of the CloudFront distribution"
+    Value: !Ref VortexCloudFrontDistribution
+    Export:
+      Name: !Sub "${Environment}-cloudfront-distribution-id"
+
+  CloudFrontDomainName:
+    Description: "Domain name of the CloudFront distribution"
+    Value: !GetAtt VortexCloudFrontDistribution.DomainName
+    Export:
+      Name: !Sub "${Environment}-cloudfront-domain-name"

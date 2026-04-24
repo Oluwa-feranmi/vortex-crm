@@ -1,0 +1,273 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "RDS instance, Secrets Manager, and Lambda Custom Resource Stack for Database Management"
+
+Parameters:
+  Environment:
+    Type: String
+    Default: "dev"
+    Description: "Deployment environment (e.g., dev, staging, prod)"
+    AllowedValues: 
+      - dev
+      - staging
+      - prod
+  
+  DBInstanceIdentifier:
+    Type: String
+    Default: "vortex-db-instance"
+    Description: "Identifier for the RDS instance"
+  
+  DBName:
+    Type: String
+    Default: "vortexdb"
+    Description: "Name of the database"
+
+  DBUsername:
+    Type: String
+    Default: "admin"
+    Description: "Master username for the RDS instance"
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: "Master password for the RDS instance (min 8 characters)"
+
+  DBInstanceClass:
+    Type: String
+    Default: "db.t3.micro"
+    Description: "RDS instance class"
+    AllowedValues:
+      - db.t3.micro
+      - db.t3.small
+      - db.t3.medium
+
+  DBAllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 100
+    Description: "Allocated storage for the RDS instance (GB)"
+
+Resources:
+  VortexDBPasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Delete
+    Properties:
+      Name: !Sub "${Environment}-vortex-db-secret"
+      Description: "Secret for RDS database credentials"
+      SecretString: !Sub '{"username": "${DBUsername}", "password": "${DBPassword}", "dbname": "${DBName}", "host": "", "port": "3306"}'
+      
+  VortexDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: "Subnet group for Vortex RDS instance"
+      SubnetIds:
+        - Fn::ImportValue: !Sub "${Environment}-public-subnet-id"
+        - Fn::ImportValue: !Sub "${Environment}-private-subnet-id"
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-db-subnet-group"
+
+  VortexDBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security group for Vortex RDS instance"
+      VpcId: !Sub
+        - "${VpcId}"
+        - VpcId:
+            Fn::ImportValue: !Sub "${Environment}-vpc-id"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: 10.0.0.0/16
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-db-sg"
+
+  VortexDBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Ref DBInstanceIdentifier
+      AllocatedStorage: !Ref DBAllocatedStorage
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: mysql
+      EngineVersion: "8.0"
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBName: !Ref DBName
+      DBSubnetGroupName: !Ref VortexDBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref VortexDBSecurityGroup
+      PubliclyAccessible: false
+      DeletionProtection: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-rds-instance"
+
+  VortexPymysqlLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: !Sub "${Environment}-pymysql-layer"
+      Description: "PyMySQL layer for RDS connectivity"
+      Content:
+        S3Bucket: !Sub "vortexcrm-${Environment}-lambda-layers"
+        S3Key: "pymysql-layer.zip"
+      CompatibleRuntimes:
+        - python3.12
+
+  VortexDBCustomResourceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${Environment}-db-custom-resource-function"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt VortexDBCustomResourceRole.Arn
+      Timeout: 300
+      Layers:
+        - !Ref VortexPymysqlLayer
+      Environment:
+        Variables:
+          DB_ENDPOINT: !GetAtt VortexDBInstance.Endpoint.Address
+          DB_PORT: !GetAtt VortexDBInstance.Endpoint.Port
+          DB_NAME: !Ref DBName
+          SECRET_ARN: !GetAtt VortexDBPasswordSecret.Id
+      VpcConfig:
+        SubnetIds:
+          - Fn::ImportValue: !Sub "${Environment}-private-subnet-id"
+        SecurityGroupIds:
+          - !Ref VortexDBSecurityGroup
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import pymysql
+          import urllib3
+          import os
+
+          http = urllib3.PoolManager()
+
+          def send_response(event, context, status, reason=""):
+              body = json.dumps({
+                  "Status": status,
+                  "Reason": reason,
+                  "PhysicalResourceId": context.log_stream_name,
+                  "StackId": event["StackId"],
+                  "RequestId": event["RequestId"],
+                  "LogicalResourceId": event["LogicalResourceId"],
+              })
+              http.request(
+                  "PUT",
+                  event["ResponseURL"],
+                  body=body,
+                  headers={"Content-Type": "application/json"},
+              )
+
+          def get_credentials():
+              client = boto3.client("secretsmanager")
+              secret = client.get_secret_value(SecretId=os.environ["SECRET_ARN"])
+              return json.loads(secret["SecretString"])
+
+          def get_connection(creds):
+              return pymysql.connect(
+                  host=os.environ["DB_ENDPOINT"],
+                  port=int(os.environ["DB_PORT"]),
+                  user=creds["username"],
+                  password=creds["password"],
+                  database=os.environ["DB_NAME"],
+                  connect_timeout=10,
+              )
+
+          def handler(event, context):
+              print("Received event: " + json.dumps(event))
+              try:
+                  request_type = event["RequestType"]
+                  if request_type == "Create":
+                      creds = get_credentials()
+                      conn = get_connection(creds)
+                      with conn.cursor() as cursor:
+                          cursor.execute("SELECT VERSION()")
+                          version = cursor.fetchone()
+                          print(f"Connected to MySQL version: {version[0]}")
+                      conn.close()
+                  elif request_type == "Update":
+                      pass
+                  elif request_type == "Delete":
+                      pass
+                  send_response(event, context, "SUCCESS")
+              except Exception as e:
+                  send_response(event, context, "FAILED", str(e))
+
+  VortexDBCustomResource:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: VortexDBInstance
+    Properties:
+      ServiceToken: !GetAtt VortexDBCustomResourceFunction.Arn
+            
+  VortexDBCustomResourceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Environment}-db-custom-resource-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: RDSAccessPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - rds:DescribeDBInstances
+                  - rds:CreateDBInstance
+                  - rds:DeleteDBInstance
+                  - rds:ModifyDBInstance
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !GetAtt VortexDBPasswordSecret.Id
+                
+Outputs:
+  DBSecretArnOutput:
+    Description: "ARN of the Secrets Manager secret for the database"
+    Value: !GetAtt VortexDBPasswordSecret.Id
+    Export:
+      Name: !Sub "${Environment}-db-secret-arn"
+
+  DBSecurityGroupIdOutput:
+    Description: "Security Group ID for the RDS instance"
+    Value: !Ref VortexDBSecurityGroup
+    Export:
+      Name: !Sub "${Environment}-db-sg-id"
+
+  DBInstanceIdentifierOutput:
+    Description: "Identifier of the RDS instance"
+    Value: !Ref VortexDBInstance
+    Export:
+      Name: !Sub "${Environment}-db-instance-id"
+
+  DBPasswordSecretNameOutput:
+    Description: "Name of the Secrets Manager secret for the database password"
+    Value: !Ref VortexDBPasswordSecret
+    Export:
+      Name: !Sub "${Environment}-db-password-secret-name"
+
+  DBEndpointOutput:
+    Description: "Endpoint of the RDS instance"
+    Value: !GetAtt VortexDBInstance.Endpoint.Address
+    Export:
+      Name: !Sub "${Environment}-db-endpoint"
+
+  DBPortOutput:
+    Description: "Port of the RDS instance"
+    Value: !GetAtt VortexDBInstance.Endpoint.Port
+    Export:
+      Name: !Sub "${Environment}-db-port"

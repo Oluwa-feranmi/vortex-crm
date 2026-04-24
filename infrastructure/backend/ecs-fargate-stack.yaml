@@ -1,0 +1,168 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "ECS Fargate Stack for Containerized Applications"
+
+Parameters:
+  Environment:
+    Type: String
+    Default: "dev"
+    Description: "Deployment environment (e.g., dev, staging, prod)"
+    AllowedValues: 
+      - dev
+      - staging
+      - prod
+  
+  ClusterName:
+    Type: String
+    Default: "vortex-cluster"
+    Description: "Name of the ECS Cluster"
+  
+  ServiceName:
+    Type: String
+    Default: "vortex-service"
+    Description: "Name of the ECS Service"
+  
+  TaskDefinitionName:
+    Type: String
+    Default: "vortex-task"
+    Description: "Name of the ECS Task Definition"
+
+Resources:
+  VortexECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref ClusterName
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-ecs-cluster"
+
+  VortexECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref TaskDefinitionName
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: "256"
+      Memory: "512"
+      ExecutionRoleArn: !GetAtt VortexECSServiceRole.Arn
+      ContainerDefinitions:
+        - Name: vortex-container
+          Image: "amazon/amazon-ecs-sample"
+          PortMappings:
+            - ContainerPort: 80
+              Protocol: tcp
+
+  VortexECSService:
+    Type: AWS::ECS::Service
+    DependsOn: ALBListener
+    Properties:
+      Cluster: !Ref VortexECSCluster
+      ServiceName: !Ref ServiceName
+      TaskDefinition: !Ref VortexECSTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - Fn::ImportValue: !Sub "${Environment}-public-subnet-id"
+            - Fn::ImportValue: !Sub "${Environment}-private-subnet-id"
+          SecurityGroups:
+            - !Ref VortexSecurityGroup
+      LoadBalancers:
+        - ContainerName: vortex-container
+          ContainerPort: 80
+          TargetGroupArn: !Ref ALBTargetGroup
+          
+  VortexSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Vortex ECS service
+      VpcId:
+        Fn::ImportValue: !Sub "${Environment}-vpc-id"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-ecs-sg"
+
+  VortexECSServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      RoleName: !Sub "${Environment}-ecs-service-role"
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-ecs-service-role"
+    
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${Environment}-alb"
+      Subnets:
+        - Fn::ImportValue: !Sub "${Environment}-public-subnet-id"
+        - Fn::ImportValue: !Sub "${Environment}-private-subnet-id"
+      SecurityGroups:
+        - !Ref VortexSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-alb"
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${Environment}-tg"
+      Port: 80
+      Protocol: HTTP
+      TargetType: ip
+      VpcId:
+        Fn::ImportValue: !Sub "${Environment}-vpc-id"
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-tg"
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+
+Outputs:
+  ALBDNSName:
+    Description: "DNS name of the Application Load Balancer"
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: !Sub "${Environment}-alb-dns"
+
+  ECSClusterName:
+    Description: "Name of the ECS Cluster"
+    Value: !Ref VortexECSCluster
+    Export:
+      Name: !Sub "${Environment}-ecs-cluster-name"
+
+  ECSSecurityGroupId:
+    Description: "Security Group ID for the ECS service"
+    Value: !Ref VortexSecurityGroup
+    Export:
+      Name: !Sub "${Environment}-ecs-sg-id"
+
+  ALBTargetGroupArn:
+    Description: "ARN of the ALB Target Group"
+    Value: !Ref ALBTargetGroup
+    Export:
+      Name: !Sub "${Environment}-alb-tg-arn"
