@@ -40,7 +40,7 @@ flowchart TD
     style D fill:#fee2e2
     style E fill:#fee2e2
     style F fill:#fee2e2
-```mermaid
+```
 
 ## Screenshots
 ```markdown
