@@ -11,7 +11,7 @@ A full-stack Customer Relationship Management (CRM) application built with React
 - Static frontend hosted on S3 + CloudFront
 
 ## Architecture
-
+```mermaid
 flowchart TD
     subgraph "Client Side"
         A[User Browser]
@@ -40,6 +40,8 @@ flowchart TD
     style D fill:#fee2e2
     style E fill:#fee2e2
     style F fill:#fee2e2
+```mermaid
+
 ## Screenshots
 ```markdown
 ![Dashboard Screenshot](screenshots/dashboard.png)
