@@ -12,20 +12,34 @@ A full-stack Customer Relationship Management (CRM) application built with React
 
 ## Architecture
 
-```mermaid
-graph TD
-    A[User Browser] --> B[CloudFront CDN]
-    B --> C[S3 Bucket\n(Static React App)]
-    C --> D[Application Load Balancer]
-    D --> E[ECS Fargate\n(Node.js Backend)]
-    E --> F[Amazon RDS MySQL]
-    
-    subgraph "AWS Infrastructure"
-        D
-        E
-        F
+flowchart TD
+    subgraph "Client Side"
+        A[User Browser]
     end
-```
+
+    subgraph "CDN & Static Hosting"
+        B[CloudFront CDN]
+        C[S3 Bucket\nStatic React App]
+    end
+
+    subgraph "AWS Backend Infrastructure"
+        D[Application Load Balancer\nALB]
+        E[ECS Fargate\nNode.js Backend]
+        F[Amazon RDS MySQL]
+    end
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+
+    style A fill:#e0f2fe
+    style B fill:#dbeafe
+    style C fill:#dbeafe
+    style D fill:#fee2e2
+    style E fill:#fee2e2
+    style F fill:#fee2e2
 ## Screenshots
 ```markdown
 ![Dashboard Screenshot](screenshots/dashboard.png)
