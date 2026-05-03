@@ -116,3 +116,8 @@ aws cloudformation delete-stack --stack-name vortexcrm-backend
 aws cloudformation delete-stack --stack-name vortexcrm-rds
 aws cloudformation delete-stack --stack-name vortexcrm-networking
 ```
+👤 Author
+Oluwa-feranmi
+Platform & Cloud Engineering Enthusiast | SRE | DevOps Engineer
+
+GitHub: @Oluwa-feranmi
